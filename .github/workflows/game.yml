@@ -49,9 +49,10 @@ jobs:
     env:
       XEX_URL: ${{ secrets.XEX_URL }}
       XEX_AUTH: ${{ secrets.XEX_AUTH }}
-      PPC_KEY: sb-ppc-${{ hashFiles('config/**', 'patches/xenonrecomp/**', 'win-build/build_ppc.sh', 'win-build/toolchain.sh', 'win-build/deps.sh', 'runtime/cpu/indirect.h', 'runtime/cpu/guest_time.h') }}
     steps:
       - uses: actions/checkout@v4
+      - name: Compute the ppc cache key (hashFiles only works inside steps, not in job-level env)
+        run: echo "PPC_KEY=sb-ppc-${{ hashFiles('config/**', 'patches/xenonrecomp/**', 'win-build/build_ppc.sh', 'win-build/toolchain.sh', 'win-build/deps.sh', 'runtime/cpu/indirect.h', 'runtime/cpu/guest_time.h') }}" >> "$GITHUB_ENV"
       - name: Prepare /home/claude and free disk
         run: |
           sudo mkdir -p /home/claude && sudo chown "$USER" /home/claude
