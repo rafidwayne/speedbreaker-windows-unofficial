@@ -9,6 +9,9 @@ name: Game (SpeedBreaker.exe)
 # "Authorization: Bearer ...". Only the first run of a new ppc cache key fetches the XEX.
 on:
   workflow_dispatch:
+  push:
+    branches: [windows]
+    paths: ['runtime/**', 'config/**', 'patches/**', 'win-build/**', 'CMakeLists.txt', '.github/workflows/game.yml']
   workflow_call:
     secrets:
       XEX_URL:
@@ -97,12 +100,15 @@ jobs:
       - name: Fetch default.xex
         if: steps.cfg.outputs.need == 'true'
         run: |
-          args=(-fsSL --retry 3 -o "$RUNNER_TEMP/default.xex")
+          # For a private release asset use the API URL (https://api.github.com/repos/OWNER/REPO/releases/assets/ID)
+          # with XEX_AUTH="Authorization: Bearer <token>"; the Accept header below is what makes the API return the file.
+          args=(-fsSL --retry 3 -H "Accept: application/octet-stream" -o "$RUNNER_TEMP/default.xex")
           if [ -n "$XEX_AUTH" ]; then args+=(-H "$XEX_AUTH"); fi
           curl "${args[@]}" "$XEX_URL"
 
       - name: Compile generated code (slow; first run of a new key only)
         if: steps.cfg.outputs.need == 'true'
+        timeout-minutes: 330   # step-level, so the cache-save steps below still run if this one times out
         run: win-build/ppc.sh "$RUNTIME_TEMP_XEX"
         env:
           RUNTIME_TEMP_XEX: ${{ runner.temp }}/default.xex
