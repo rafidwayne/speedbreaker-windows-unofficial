@@ -18,7 +18,7 @@ echo SDL_OK > /home/claude/deps/sdl_ok
 echo GL_OK > /home/claude/deps/gl_ok
 # FFmpeg XMA
 if [ ! -f /home/claude/deps/ffmpeg-xma/lib/libavcodec.a ]; then
-  cd $S/FFmpeg && for p in /home/claude/speedbreaker/patches/ffmpeg/*.patch; do patch -s -p1 < $p; done
+  cd $S/FFmpeg && for p in /home/claude/speedbreaker/patches/ffmpeg/*.patch; do patch -s -N -p1 < $p || true; done  # -N: a re-run after a failed build must not choke on an already-patched tree
   ./configure --disable-everything --disable-programs --disable-doc --disable-debug --disable-network --disable-autodetect --disable-avdevice --disable-avformat --disable-swscale --disable-swresample --disable-postproc --disable-avfilter --enable-decoder=xma1,xma2,wmapro --enable-static --disable-shared --enable-cross-compile --target-os=mingw32 --arch=x86_64 --cross-prefix=x86_64-w64-mingw32- --cc="clang --target=x86_64-w64-mingw32" --prefix=/home/claude/deps/ffmpeg-xma --disable-x86asm > /home/claude/deps/ffconf.log 2>&1 || { echo FFCONF_FAIL > /home/claude/deps/FAIL; exit 1; }
   make -j"${JOBS:-1}" && make install || { echo FF_FAIL > /home/claude/deps/FAIL; exit 1; }
 fi

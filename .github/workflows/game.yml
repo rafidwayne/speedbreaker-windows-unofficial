@@ -1,9 +1,12 @@
 name: Game (SpeedBreaker.exe)
 
-# SpeedBreaker.exe is built from a translation of the player's own default.xex, which is
-# never in this repository. Set the repository secret XEX_URL to a PRIVATE download URL of
-# that file (and XEX_AUTH to a header such as "Authorization: Bearer ...", if the URL needs
-# one). Without XEX_URL this workflow does nothing. See README-WINDOWS.md.
+# Three cached stages, so a normal change rebuilds only the runtime (minutes):
+#   toolchain  no secrets; rebuilt only when win-build/toolchain.sh, deps.sh, the cmake file or patches/ change
+#   ppc        needs XEX_URL; the slow compile of the generated code; cached by what it depends on.
+#              Cache is saved even if the job fails or times out, so the next run resumes.
+#   runtime    every run: ccache-backed incremental build of the exe from the cached ppc/ + archive
+# XEX_URL (secret) = private download URL of default.xex; XEX_AUTH (optional) = header such as
+# "Authorization: Bearer ...". Only the first run of a new ppc cache key fetches the XEX.
 on:
   workflow_dispatch:
   workflow_call:
@@ -17,64 +20,130 @@ permissions:
   contents: read
 
 jobs:
-  build:
+  toolchain:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prepare /home/claude (the helper scripts use fixed paths)
+        run: |
+          sudo mkdir -p /home/claude && sudo chown "$USER" /home/claude
+          ln -sfn "$GITHUB_WORKSPACE" /home/claude/speedbreaker
+      - id: tc
+        uses: actions/cache@v4
+        with:
+          path: |
+            /home/claude/deps
+            tools/XenonRecomp
+          key: sb-toolchain-${{ hashFiles('win-build/toolchain.sh', 'win-build/deps.sh', 'win-build/mingw-toolchain.cmake', 'patches/**') }}
+      - if: steps.tc.outputs.cache-hit != 'true'
+        run: win-build/toolchain.sh
+
+  game:
+    needs: toolchain
     runs-on: ubuntu-24.04
     timeout-minutes: 350
     env:
       XEX_URL: ${{ secrets.XEX_URL }}
       XEX_AUTH: ${{ secrets.XEX_AUTH }}
+      PPC_KEY: sb-ppc-${{ hashFiles('config/**', 'patches/xenonrecomp/**', 'win-build/build_ppc.sh', 'win-build/toolchain.sh', 'win-build/deps.sh', 'runtime/cpu/indirect.h', 'runtime/cpu/guest_time.h') }}
     steps:
+      - uses: actions/checkout@v4
+      - name: Prepare /home/claude and free disk
+        run: |
+          sudo mkdir -p /home/claude && sudo chown "$USER" /home/claude
+          ln -sfn "$GITHUB_WORKSPACE" /home/claude/speedbreaker
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          sudo apt-get update -qq || true
+          sudo apt-get install -y -qq ccache clang lld cmake ninja-build g++-mingw-w64-x86-64-posix gcc-mingw-w64-x86-64-posix mingw-w64-x86-64-dev binutils-mingw-w64-x86-64
+          sudo update-alternatives --set x86_64-w64-mingw32-g++ /usr/bin/x86_64-w64-mingw32-g++-posix || true
+          sudo update-alternatives --set x86_64-w64-mingw32-gcc /usr/bin/x86_64-w64-mingw32-gcc-posix || true
+          sudo ln -sf /usr/x86_64-w64-mingw32/include/windows.h /usr/x86_64-w64-mingw32/include/Windows.h
+          cp win-build/mingw-toolchain.cmake win-build/deps.sh win-build/build_ppc.sh /home/claude/
+
+      - name: Restore toolchain
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            /home/claude/deps
+            tools/XenonRecomp
+          key: sb-toolchain-${{ hashFiles('win-build/toolchain.sh', 'win-build/deps.sh', 'win-build/mingw-toolchain.cmake', 'patches/**') }}
+          fail-on-cache-miss: true
+
+      - name: Restore finished ppc stage (generated code + archive)
+        id: ppc
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ppc
+            /home/claude/libNfsmwRecompLib.a
+          key: ${{ env.PPC_KEY }}
+
       - name: Is a default.xex source configured?
         id: cfg
         run: |
-          if [ -n "$XEX_URL" ]; then
-            echo "have=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "have=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::The XEX_URL secret is not set, so SpeedBreaker.exe was not built. See README-WINDOWS.md."
-          fi
+          if [ "${{ steps.ppc.outputs.cache-hit }}" = "true" ]; then echo "need=false" >> "$GITHUB_OUTPUT"
+          elif [ -n "$XEX_URL" ]; then echo "need=true" >> "$GITHUB_OUTPUT"
+          else echo "::error::No cached ppc stage and the XEX_URL secret is not set."; exit 1; fi
 
-      - uses: actions/checkout@v4
-        if: steps.cfg.outputs.have == 'true'
-
-      - name: Free disk space (the build needs about 10 GB)
-        if: steps.cfg.outputs.have == 'true'
-        run: |
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/share/boost
-          df -h /
+      - name: Restore partial objects (resume after a timeout)
+        if: steps.cfg.outputs.need == 'true'
+        uses: actions/cache/restore@v4
+        with:
+          path: /home/claude/ppcobj
+          key: sb-ppcobj-${{ github.run_id }}
+          restore-keys: sb-ppcobj-
 
       - name: Fetch default.xex
-        if: steps.cfg.outputs.have == 'true'
+        if: steps.cfg.outputs.need == 'true'
         run: |
           args=(-fsSL --retry 3 -o "$RUNNER_TEMP/default.xex")
           if [ -n "$XEX_AUTH" ]; then args+=(-H "$XEX_AUTH"); fi
           curl "${args[@]}" "$XEX_URL"
-          echo "aebdf3c14d1e4e4ed2c130d94bc1a0e97bd6d5bf39bdfdef33c3909c9cc4ba4c  $RUNNER_TEMP/default.xex" | sha256sum -c -
 
-      - name: Build (win-build/ci-build.sh)
-        if: steps.cfg.outputs.have == 'true'
-        run: win-build/ci-build.sh "$RUNNER_TEMP/default.xex"
+      - name: Compile generated code (slow; first run of a new key only)
+        if: steps.cfg.outputs.need == 'true'
+        run: win-build/ppc.sh "$RUNTIME_TEMP_XEX"
+        env:
+          RUNTIME_TEMP_XEX: ${{ runner.temp }}/default.xex
 
-      - name: Remove default.xex and fix file ownership (the build ran as root)
-        if: always() && steps.cfg.outputs.have == 'true'
+      - name: Save partial objects even if the step above failed or timed out
+        if: always() && steps.cfg.outputs.need == 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: /home/claude/ppcobj
+          key: sb-ppcobj-${{ github.run_id }}
+
+      - name: Save finished ppc stage
+        if: steps.cfg.outputs.need == 'true' && success()
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ppc
+            /home/claude/libNfsmwRecompLib.a
+          key: ${{ env.PPC_KEY }}
+
+      - name: ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ccache
+          key: sb-ccache-${{ github.sha }}
+          restore-keys: sb-ccache-
+
+      - name: Build the exe (fast path)
         run: |
-          rm -f "$RUNNER_TEMP/default.xex" game/files/default.xex
-          sudo chown -R "$(id -u):$(id -g)" "$GITHUB_WORKSPACE"
+          win-build/runtime.sh
+          mkdir -p dist && cp /home/claude/SpeedBreaker.exe dist/
+          (cd dist && sha256sum SpeedBreaker.exe > SpeedBreaker.exe.sha256)
+          ccache -s | head -5 || true
+
+      - name: Remove the xex
+        if: always()
+        run: rm -f "$RUNNER_TEMP/default.xex" game/files/default.xex
 
       - uses: actions/upload-artifact@v4
-        if: steps.cfg.outputs.have == 'true'
         with:
           name: SpeedBreaker
           path: |
             dist/SpeedBreaker.exe
             dist/SpeedBreaker.exe.sha256
-
-      - uses: actions/upload-artifact@v4
-        if: failure()
-        with:
-          name: build-logs
-          path: |
-            /home/claude/ppc_fail.log
-            /home/claude/deps/ffconf.log
-            /home/claude/deps/FAIL
-          if-no-files-found: ignore
