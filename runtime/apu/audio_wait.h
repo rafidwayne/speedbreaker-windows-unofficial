@@ -25,104 +25,43 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
+#include <memory>
 #include <thread>
 
 #ifdef _WIN32
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#include <windows.h>
-
-#ifndef CREATE_WAITABLE_TIMER_HIGH_RESOLUTION
-#define CREATE_WAITABLE_TIMER_HIGH_RESOLUTION 0x00000002
-#endif
-
+#ifdef SB_FAKE_WINDOWS_GUARD
+// The runtime build keeps <windows.h> out of its sources (compat/win/win_compat.h), so AudioWait is
+// only declared here and implemented in audio_wait_win.cpp.
 namespace apu
 {
-    // Create on the audio thread: the scheduling it asks for is the calling
-    // thread's. Until() is for that thread only.
+    namespace detail
+    {
+        class AudioWaitImpl;
+    }
+
     class AudioWait
     {
     public:
-        AudioWait()
-        {
-            m_timer = CreateWaitableTimerExW(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
-            if (!m_timer)
-            {
-                // Before Windows 10 1803: the best the system tick allows.
-                // (Loaded, not linked: the exe needn't import winmm.)
-                if (HMODULE winmm = LoadLibraryW(L"winmm.dll"))
-                {
-                    using Fn = UINT(WINAPI*)(UINT);
-                    if (auto begin = reinterpret_cast<Fn>(reinterpret_cast<void*>(GetProcAddress(winmm, "timeBeginPeriod"))))
-                        m_period = begin(1) == 0;
-                }
-            }
-
-            // MMCSS, loaded the same way. "Pro Audio" first, then "Audio".
-            if (HMODULE avrt = LoadLibraryW(L"avrt.dll"))
-            {
-                using Fn = HANDLE(WINAPI*)(LPCWSTR, LPDWORD);
-                if (auto set = reinterpret_cast<Fn>(reinterpret_cast<void*>(GetProcAddress(avrt, "AvSetMmThreadCharacteristicsW"))))
-                {
-                    DWORD task = 0;
-                    m_mmcss = set(L"Pro Audio", &task);
-                    if (!m_mmcss)
-                        m_mmcss = set(L"Audio", &task);
-                }
-            }
-            if (!m_mmcss)
-                SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
-        }
-
+        AudioWait();
+        ~AudioWait();
         AudioWait(const AudioWait&) = delete;
         AudioWait& operator=(const AudioWait&) = delete;
 
-        ~AudioWait()
-        {
-            if (m_timer)
-                CloseHandle(m_timer);
-        }
-
-        void Until(std::chrono::steady_clock::time_point t)
-        {
-            using namespace std::chrono;
-            const auto remaining = t - steady_clock::now();
-            if (remaining <= steady_clock::duration::zero())
-                return;
-            if (m_timer)
-            {
-                // A negative due time is relative, in 100 ns units.
-                LARGE_INTEGER due;
-                due.QuadPart = -std::max<int64_t>(1, duration_cast<nanoseconds>(remaining).count() / 100);
-                if (SetWaitableTimer(m_timer, &due, 0, nullptr, nullptr, FALSE))
-                {
-                    WaitForSingleObject(m_timer, INFINITE);
-                    return;
-                }
-            }
-            std::this_thread::sleep_until(t);
-        }
-
-        // For the log.
-        const char* Describe() const
-        {
-            if (m_timer)
-                return m_mmcss ? "high-resolution timer, MMCSS" : "high-resolution timer, thread priority";
-            return m_mmcss ? (m_period ? "sleep_until at 1 ms, MMCSS" : "sleep_until at the system timer tick, MMCSS")
-                           : (m_period ? "sleep_until at 1 ms, thread priority" : "sleep_until at the system timer tick, thread priority");
-        }
+        void Until(std::chrono::steady_clock::time_point t);
+        const char* Describe() const;
 
     private:
-        HANDLE m_timer = nullptr;
-        HANDLE m_mmcss = nullptr;
-        bool m_period = false;
+        std::unique_ptr<detail::AudioWaitImpl> m_impl;
     };
 }
-
+#else
+// Native Windows build (e.g. AudioPacingTest): use the implementation directly.
+#include "audio_wait_win.h"
+namespace apu
+{
+    using AudioWait = detail::AudioWaitImpl;
+}
+#endif
 #else
 
 namespace apu

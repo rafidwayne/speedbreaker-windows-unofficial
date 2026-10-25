@@ -5,13 +5,13 @@ on:
     paths:
       - 'launcher/**'
       - 'win-build/audio-pacing-test/**'
-      - 'runtime/apu/audio_wait.h'
+      - 'runtime/apu/audio_wait*.h'
       - '.github/workflows/launcher.yml'
   pull_request:
     paths:
       - 'launcher/**'
       - 'win-build/audio-pacing-test/**'
-      - 'runtime/apu/audio_wait.h'
+      - 'runtime/apu/audio_wait*.h'
       - '.github/workflows/launcher.yml'
   workflow_dispatch:
   workflow_call:
