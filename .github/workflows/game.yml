@@ -5,8 +5,9 @@ name: Game (SpeedBreaker.exe)
 #   ppc        needs XEX_URL; the slow compile of the generated code; cached by what it depends on.
 #              Cache is saved even if the job fails or times out, so the next run resumes.
 #   runtime    every run: ccache-backed incremental build of the exe from the cached ppc/ + archive
-# XEX_URL (secret) = private download URL of default.xex; XEX_AUTH (optional) = header such as
-# "Authorization: Bearer ...". Only the first run of a new ppc cache key fetches the XEX.
+# default.xex comes from the XEX_URL set in the game job's env below (a public release asset).
+# XEX_AUTH (optional secret) = extra header such as "Authorization: Bearer ..." if that ever becomes private.
+# Only the first run of a new ppc cache key fetches the XEX.
 on:
   workflow_dispatch:
   push:
@@ -47,7 +48,8 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 350
     env:
-      XEX_URL: ${{ secrets.XEX_URL }}
+      # Public release asset (checked: downloads without auth, SHA-256 matches). The XEX_URL secret is no longer used.
+      XEX_URL: https://github.com/rafidwayne/speedbreaker-private/releases/download/xex/default.xex
       XEX_AUTH: ${{ secrets.XEX_AUTH }}
     steps:
       - uses: actions/checkout@v4
